@@ -23,6 +23,7 @@
 #include "memmanager.h"
 #include "video.h"
 #include "filebrowser.h"
+#include "favorites.h"
 #include "utils/decompress.h"
 #include "fileop.h"
 #include "sram.h"
@@ -61,6 +62,10 @@ extern SCheatData Cheat;
 extern void ToggleCheat(uint32);
 
 #define THREAD_SLEEP 100
+
+// Button that toggles "favorite" in the file browser (Minus on Wii / Wii U).
+// Not used by GuiFileBrowser itself.
+#define FAVORITE_TOGGLE_BUTTON INPUT_BTN_MINUS
 
 #ifndef HW_DOL
 static GuiImageData * pointer[4];
@@ -1060,6 +1065,30 @@ static char* getImageFolder()
 }
 
 static bool ResolvePreviewImagePath(void *, int index, char * outPath, size_t outPathSize)
+	if(InFavoritesView())
+{
+	if(browser.numEntries <= 0 || index <= 0 || index >= browser.numEntries || browserList[index].isdir)
+		return false;
+
+	char full[MAXJOLIET + 1];
+	snprintf(full, sizeof(full), "%s", browserList[index].filename);
+
+	int device;
+	const char * slash = strrchr(full, '/');
+	if(slash == nullptr || !FindDevice(full, &device))
+		return false;
+
+	char fileName[MAXJOLIET + 1];
+	snprintf(fileName, sizeof(fileName), "%s", slash + 1);
+
+	char imageBase[MAXJOLIET + 1];
+	StripExt(imageBase, fileName);
+
+	char imageFile[MAXJOLIET + 16];
+	snprintf(imageFile, sizeof(imageFile), "%s.png", imageBase);
+	platform->getFileSystem()->getPath(outPath, outPathSize, device, getImageFolder(), imageFile);
+	return true;
+}
 {
 	if(browser.dir[0] == 0 || EmuSettings.loadDevice <= 0 ||
 	   browser.numEntries <= 0 || index <= 0 || index >= browser.numEntries)
@@ -1097,7 +1126,7 @@ static int ChangeInterfaceTask(void * arg) {
 	return ChangeInterface(a->device, a->silent) ? 1 : 0;
 }
 
-static int OpenGameListTask(void *) { return OpenGameList(); }
+static int OpenGameListTask(void *) { FavoritesLoadTask(nullptr); return OpenGameList(); }
 
 static int AutoDetectDevicesTask(void *) { AutoDetectDevices(); return 0; }
 
@@ -1259,6 +1288,12 @@ static int MenuGameSelection()
 	GuiTrigger trigHome;
 	trigHome.setButtonOnlyTrigger(-1, INPUT_BTN_HOME);
 
+	GuiTrigger trigFavorite;
+	trigFavorite.setButtonOnlyTrigger(-1, FAVORITE_TOGGLE_BUTTON);
+	GuiButton favoriteBtn;
+	favoriteBtn.setTrigger(&trigFavorite);
+	buttonWindow.append(&favoriteBtn);
+
 	GuiText settingsBtnTxt("Settings", 22, (PixelColor){0, 0, 0, 255});
 	GuiImage settingsBtnIcon(&iconSettings);
 	settingsBtnIcon.setAlignment(ALIGN_H::LEFT, ALIGN_V::MIDDLE);
@@ -1344,7 +1379,7 @@ static int MenuGameSelection()
 	gameBrowser.resetState();
 	gameBrowser.fileList[0]->setState(STATE::SELECTED);
 	gameBrowser.triggerUpdate();
-	titleTxt.setText(inSz ? szname : "Choose Game");
+	titleTxt.setText(InFavoritesView() ? "Favorites" : (inSz ? szname : "Choose Game"));
 
 	while(selection == MENU_NONE)
 	{
@@ -1459,6 +1494,39 @@ static int MenuGameSelection()
 			}
 		}
 
+		if(favoriteBtn.getState() == STATE::CLICKED)
+		{
+			favoriteBtn.resetState();
+
+			int favResult = ToggleFavoriteOnSelection();
+
+			if(favResult == FAVORITE_ADDED || favResult == FAVORITE_REMOVED)
+			{
+				int saved = 0;
+				if(!RunWithGuiUpdates(SaveFavoritesTask, &saved)) return MENU_EXIT;
+				if(!saved) favResult = FAVORITE_SAVE_ERROR;
+
+				// Removing inside the favorites view rebuilds the list: keep the selected row
+				// visible, and drop cached preview images (indices now mean other files).
+				if(InFavoritesView())
+				{
+					if(browser.selIndex < browser.pageIndex)
+						browser.pageIndex = browser.selIndex;
+					else if(browser.selIndex >= browser.pageIndex + FILE_PAGESIZE)
+						browser.pageIndex = browser.selIndex - FILE_PAGESIZE + 1;
+					gameBrowser.refreshPreview();
+				}
+
+				// re-reads the display names and the selection (browser.selIndex / pageIndex)
+				gameBrowser.triggerUpdate();
+			}
+
+			if(favResult == FAVORITE_LIST_FULL)
+				ErrorPrompt("Favorites list is full!");
+			else if(favResult == FAVORITE_SAVE_ERROR)
+				ErrorPrompt("Could not save favorites!");
+		}
+		
 		if(settingsBtn.getState() == STATE::CLICKED)
 			selection = MENU_SETTINGS;
 		else if(exitBtn.getState() == STATE::CLICKED)
