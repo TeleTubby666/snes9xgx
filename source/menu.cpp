@@ -1065,31 +1065,32 @@ static char* getImageFolder()
 }
 
 static bool ResolvePreviewImagePath(void *, int index, char * outPath, size_t outPathSize)
+{
 	if(InFavoritesView())
-{
-	if(browser.numEntries <= 0 || index <= 0 || index >= browser.numEntries || browserList[index].isdir)
-		return false;
+	{
+		if(browser.numEntries <= 0 || index <= 0 || index >= browser.numEntries || browserList[index].isdir)
+			return false;
 
-	char full[MAXJOLIET + 1];
-	snprintf(full, sizeof(full), "%s", browserList[index].filename);
+		char full[MAXJOLIET + 1];
+		snprintf(full, sizeof(full), "%s", browserList[index].filename);
 
-	int device;
-	const char * slash = strrchr(full, '/');
-	if(slash == nullptr || !FindDevice(full, &device))
-		return false;
+		int device;
+		const char * slash = strrchr(full, '/');
+		if(slash == nullptr || !FindDevice(full, &device))
+			return false;
 
-	char fileName[MAXJOLIET + 1];
-	snprintf(fileName, sizeof(fileName), "%s", slash + 1);
+		char fileName[MAXJOLIET + 1];
+		snprintf(fileName, sizeof(fileName), "%s", slash + 1);
 
-	char imageBase[MAXJOLIET + 1];
-	StripExt(imageBase, fileName);
+		char imageBase[MAXJOLIET + 1];
+		StripExt(imageBase, fileName);
 
-	char imageFile[MAXJOLIET + 16];
-	snprintf(imageFile, sizeof(imageFile), "%s.png", imageBase);
-	platform->getFileSystem()->getPath(outPath, outPathSize, device, getImageFolder(), imageFile);
-	return true;
-}
-{
+		char imageFile[MAXJOLIET + 16];
+		snprintf(imageFile, sizeof(imageFile), "%s.png", imageBase);
+		platform->getFileSystem()->getPath(outPath, outPathSize, device, getImageFolder(), imageFile);
+		return true;
+	}
+
 	if(browser.dir[0] == 0 || EmuSettings.loadDevice <= 0 ||
 	   browser.numEntries <= 0 || index <= 0 || index >= browser.numEntries)
 		return false;
@@ -1288,12 +1289,6 @@ static int MenuGameSelection()
 	GuiTrigger trigHome;
 	trigHome.setButtonOnlyTrigger(-1, INPUT_BTN_HOME);
 
-	GuiTrigger trigFavorite;
-	trigFavorite.setButtonOnlyTrigger(-1, FAVORITE_TOGGLE_BUTTON);
-	GuiButton favoriteBtn;
-	favoriteBtn.setTrigger(&trigFavorite);
-	buttonWindow.append(&favoriteBtn);
-
 	GuiText settingsBtnTxt("Settings", 22, (PixelColor){0, 0, 0, 255});
 	GuiImage settingsBtnIcon(&iconSettings);
 	settingsBtnIcon.setAlignment(ALIGN_H::LEFT, ALIGN_V::MIDDLE);
@@ -1339,6 +1334,12 @@ static int MenuGameSelection()
 	buttonWindow.append(&settingsBtn);
 	buttonWindow.append(&exitBtn);
 
+	GuiTrigger trigFavorite;
+	trigFavorite.setButtonOnlyTrigger(-1, FAVORITE_TOGGLE_BUTTON);
+	GuiButton favoriteBtn;
+	favoriteBtn.setTrigger(&trigFavorite);
+	buttonWindow.append(&favoriteBtn);
+
 	#ifdef __WIIU__
 	GuiButton hiddenHomeBtn;
 	hiddenHomeBtn.setTrigger(&trigHome);
@@ -1379,7 +1380,7 @@ static int MenuGameSelection()
 	gameBrowser.resetState();
 	gameBrowser.fileList[0]->setState(STATE::SELECTED);
 	gameBrowser.triggerUpdate();
-	titleTxt.setText(InFavoritesView() ? "Favorites" : (inSz ? szname : "Choose Game"));
+	titleTxt.setText(inSz ? szname : "Choose Game");
 
 	while(selection == MENU_NONE)
 	{
@@ -1464,7 +1465,7 @@ static int MenuGameSelection()
 						break;
 					}
 
-					titleTxt.setText(inSz ? szname : "Choose Game");
+					titleTxt.setText(InFavoritesView() ? "Favorites" : (inSz ? szname : "Choose Game"));
 				}
 				else
 				{
