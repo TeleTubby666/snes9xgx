@@ -46,7 +46,7 @@ static bool GetFavoritesPath(char * path)
 {
 	if(EmuSettings.saveDevice == DEVICE_AUTO)
 		return false;
-	platform->getFileSystem()->getPath(path, EmuSettings.saveDevice, APPFOLDER, FAVORITES_FILE);
+	platform->getFileSystem()->getPath(path, MAXPATHLEN, EmuSettings.saveDevice, APPFOLDER, FAVORITES_FILE);
 	return true;
 }
 
