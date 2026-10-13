@@ -74,6 +74,41 @@ static void DbgLog(const char * fmt, ...)
 	}
 }
 
+#ifndef HW_DOL
+// ---- Wii only: guard + trace for libsmb2's socket reads ----
+// libsmb2 reads in a loop until the socket reports EAGAIN. The debug log showed
+// smb2_service() never returns on the Wii after the tree connect, i.e. the
+// read after the last PDU does not come back with "no data". Linked with
+// -Wl,--wrap=net_read (Makefile.wii): for the SMB socket, only really read
+// when select() says data is waiting, otherwise report EAGAIN ourselves.
+static volatile int smbSockFd = -1;
+
+extern "C" s32 __real_net_read(s32 s, void * mem, size_t len);
+extern "C" s32 __wrap_net_read(s32 s, void * mem, size_t len)
+{
+	static int calls = 0;
+	if(s == smbSockFd)
+	{
+		fd_set rd;
+		FD_ZERO(&rd);
+		FD_SET(s, &rd);
+		struct timeval tv;
+		tv.tv_sec = 0;
+		tv.tv_usec = 0;
+		int r = net_select(s + 1, &rd, NULL, NULL, &tv);
+		if(r == 0)
+		{
+			if(calls < 60) { calls++; DbgLog("net_read(len=%u): nothing waiting -> EAGAIN", (unsigned)len); }
+			return -EAGAIN;
+		}
+	}
+
+	s32 ret = __real_net_read(s, mem, len);
+	if(s == smbSockFd && calls < 60) { calls++; DbgLog("net_read(len=%u) = %d", (unsigned)len, (int)ret); }
+	return ret;
+}
+#endif
+
 // Fixed device name (smb:/)
 static const char * const smbDeviceName = "smb";
 
@@ -402,6 +437,9 @@ static WaitResult WaitForConnect(smb2_context * ctx, ConnectWait & wait, SmbCanc
 			continue;
 		}
 
+#ifndef HW_DOL
+		smbSockFd = fd;
+#endif
 		int events = smb2_which_events(ctx);
 		if(iter <= 60) DbgLog("WaitForConnect: iter %d fd=%d events=0x%x -> net_select", iter, fd, events);
 		fd_set rd, wr, ex;
@@ -577,6 +615,9 @@ SmbConnectResult OgcSmbDriver::connect(const SmbShareInfo & info)
 
 void OgcSmbDriver::disconnect()
 {
+#ifndef HW_DOL
+	smbSockFd = -1;
+#endif
 	if(devoptabAdded)
 	{
 		RemoveDevice("smb:");
