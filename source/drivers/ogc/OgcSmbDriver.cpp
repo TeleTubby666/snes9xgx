@@ -42,6 +42,47 @@ smb2_context * OgcSmbDriver::ctx = nullptr;
 // already gone away must not stall app exit for libsmb2's normal 30 seconds
 #define SMB_DISCONNECT_TIMEOUT_SECS 2
 
+#ifndef HW_DOL
+/****************************************************************************
+ * Wii: guard libsmb2's socket reads
+ *
+ * libsmb2 reads in a loop until the socket reports EAGAIN, and net_read()
+ * allocates the whole requested length from libogc's fixed 64 KB IOS network
+ * heap. On the Wii that goes wrong in two ways:
+ *  - the read after the last PDU did not report "no data", so smb2_service()
+ *    never returned and the connect hung after the tree connect;
+ *  - a large reply (directory listings are up to ~64 KB) can't be allocated
+ *    at once and fails with IPC_ENOMEM, which breaks the connection.
+ * The linker wraps net_read (-Wl,--wrap=net_read in Makefile.wii): for the SMB
+ * socket only, reads are capped to a small chunk and only done when select()
+ * reports data, otherwise EAGAIN is returned. libsmb2 resumes partial PDUs.
+ ***************************************************************************/
+#define SMB_MAX_READ_CHUNK 8192
+
+static volatile int smbSockFd = -1;
+
+extern "C" s32 __real_net_read(s32 s, void * mem, size_t len);
+extern "C" s32 __wrap_net_read(s32 s, void * mem, size_t len)
+{
+	if(s == smbSockFd)
+	{
+		if(len > SMB_MAX_READ_CHUNK)
+			len = SMB_MAX_READ_CHUNK;
+
+		fd_set rd;
+		FD_ZERO(&rd);
+		FD_SET(s, &rd);
+		struct timeval tv;
+		tv.tv_sec = 0;
+		tv.tv_usec = 0;
+		if(net_select(s + 1, &rd, NULL, NULL, &tv) == 0)
+			return -EAGAIN;
+	}
+
+	return __real_net_read(s, mem, len);
+}
+#endif
+
 // Fixed device name (smb:/)
 static const char * const smbDeviceName = "smb";
 
@@ -356,6 +397,9 @@ static WaitResult WaitForConnect(smb2_context * ctx, ConnectWait & wait, SmbCanc
 			continue;
 		}
 
+#ifndef HW_DOL
+		smbSockFd = fd;
+#endif
 		int events = smb2_which_events(ctx);
 		fd_set rd, wr, ex;
 		FD_ZERO(&rd);
@@ -515,6 +559,9 @@ SmbConnectResult OgcSmbDriver::connect(const SmbShareInfo & info)
 
 void OgcSmbDriver::disconnect()
 {
+#ifndef HW_DOL
+	smbSockFd = -1;
+#endif
 	if(devoptabAdded)
 	{
 		RemoveDevice("smb:");
