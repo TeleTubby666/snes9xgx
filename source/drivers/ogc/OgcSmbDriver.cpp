@@ -43,15 +43,16 @@ smb2_context * OgcSmbDriver::ctx = nullptr;
 // already gone away must not stall app exit for libsmb2's normal 30 seconds
 #define SMB_DISCONNECT_TIMEOUT_SECS 2
 
-// ---- TEMPORARY DEBUG: writes progress to sd:/snes9xgx/smbdebug.txt ----
+// ---- TEMPORARY DEBUG: writes progress to sd:/apps/snes9xgx/smbdebug.txt ----
 // Every line is opened/appended/closed so it survives a hang.
 // Remove once the Wii SMB connect hang is understood.
 static void DbgLog(const char * fmt, ...)
 {
+	// SD card only; first location that opens wins (FAT is case-insensitive)
 	static const char * const paths[] = {
-		"sd:/snes9xgx/smbdebug.txt", "sd:/smbdebug.txt",
-		"usb:/snes9xgx/smbdebug.txt", "usb:/smbdebug.txt",
-		"usb2:/smbdebug.txt", "usb3:/smbdebug.txt"
+		"sd:/apps/snes9xgx/smbdebug.txt",
+		"sd:/snes9xgx/smbdebug.txt",
+		"sd:/smbdebug.txt"
 	};
 
 	char line[256];
@@ -62,7 +63,6 @@ static void DbgLog(const char * fmt, ...)
 	va_end(ap);
 	strcat(line, "\n");
 
-	// write to every location that works (so we find the file wherever the card is)
 	for(unsigned i = 0; i < sizeof(paths) / sizeof(paths[0]); i++)
 	{
 		FILE * f = fopen(paths[i], "a");
@@ -70,6 +70,7 @@ static void DbgLog(const char * fmt, ...)
 			continue;
 		fputs(line, f);
 		fclose(f);
+		break;
 	}
 }
 
