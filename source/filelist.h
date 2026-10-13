@@ -109,6 +109,7 @@
 #include "icon_usb_png.h"
 #include "icon_dvd_png.h"
 #include "icon_smb_png.h"
+#include "icon_star_png.h"
 #include "battery_png.h"
 #include "battery_red_png.h"
 #include "battery_bar_png.h"

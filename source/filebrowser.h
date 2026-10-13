@@ -53,7 +53,8 @@ enum
 	ICON_SD,
 	ICON_USB,
 	ICON_DVD,
-	ICON_SMB
+	ICON_SMB,
+	ICON_STAR
 };
 
 extern unsigned long SNESROMSize;

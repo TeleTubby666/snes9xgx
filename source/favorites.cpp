@@ -322,7 +322,7 @@ int AddFavoritesListingEntry(int index)
 	sprintf(browserList[index].displayname, "Favorites");
 	browserList[index].length = 0;
 	browserList[index].isdir = 1;
-	browserList[index].icon = ICON_FOLDER;
+	browserList[index].icon = ICON_STAR;
 	return 1;
 }
 
