@@ -48,20 +48,29 @@ smb2_context * OgcSmbDriver::ctx = nullptr;
 // Remove once the Wii SMB connect hang is understood.
 static void DbgLog(const char * fmt, ...)
 {
-	FILE * f = fopen("sd:/snes9xgx/smbdebug.txt", "a");
-	if(!f)
-		return;
+	static const char * const paths[] = {
+		"sd:/snes9xgx/smbdebug.txt", "sd:/smbdebug.txt",
+		"usb:/snes9xgx/smbdebug.txt", "usb:/smbdebug.txt",
+		"usb2:/smbdebug.txt", "usb3:/smbdebug.txt"
+	};
 
-	char tbuf[32];
-	snprintf(tbuf, sizeof(tbuf), "[%u] ", (unsigned)(SystemTime::now() & 0xffffffff));
-	fputs(tbuf, f);
-
+	char line[256];
+	int n = snprintf(line, sizeof(line), "[%u] ", (unsigned)(SystemTime::now() & 0xffffffff));
 	va_list ap;
 	va_start(ap, fmt);
-	vfprintf(f, fmt, ap);
+	vsnprintf(line + n, sizeof(line) - n - 2, fmt, ap);
 	va_end(ap);
-	fputc('\n', f);
-	fclose(f);
+	strcat(line, "\n");
+
+	// write to every location that works (so we find the file wherever the card is)
+	for(unsigned i = 0; i < sizeof(paths) / sizeof(paths[0]); i++)
+	{
+		FILE * f = fopen(paths[i], "a");
+		if(!f)
+			continue;
+		fputs(line, f);
+		fclose(f);
+	}
 }
 
 // Fixed device name (smb:/)
@@ -470,6 +479,7 @@ bool OgcSmbDriver::isNetworkUp() const
 
 bool OgcSmbDriver::ensureNetworkUp()
 {
+	DbgLog("ensureNetworkUp(): enter");
 #ifdef HW_DOL
 	// lwIP's DHCP wait can't be interrupted
 	if(GameCubeNetwork::ensureUp()) return true;
