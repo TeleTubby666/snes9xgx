@@ -83,12 +83,21 @@ static void DbgLog(const char * fmt, ...)
 // when select() says data is waiting, otherwise report EAGAIN ourselves.
 static volatile int smbSockFd = -1;
 
+// libogc's net_recvfrom() allocates the whole requested length from its fixed
+// 64 KB IOS network heap and fails with IPC_ENOMEM (-22) if that doesn't fit.
+// A directory listing answer from the server is up to ~64 KB, so cap each read;
+// libsmb2 simply keeps reading until the PDU is complete.
+#define SMB_MAX_READ_CHUNK 8192
+
 extern "C" s32 __real_net_read(s32 s, void * mem, size_t len);
 extern "C" s32 __wrap_net_read(s32 s, void * mem, size_t len)
 {
 	static int calls = 0;
 	if(s == smbSockFd)
 	{
+		if(len > SMB_MAX_READ_CHUNK)
+			len = SMB_MAX_READ_CHUNK;
+
 		fd_set rd;
 		FD_ZERO(&rd);
 		FD_SET(s, &rd);
@@ -98,13 +107,13 @@ extern "C" s32 __wrap_net_read(s32 s, void * mem, size_t len)
 		int r = net_select(s + 1, &rd, NULL, NULL, &tv);
 		if(r == 0)
 		{
-			if(calls < 60) { calls++; DbgLog("net_read(len=%u): nothing waiting -> EAGAIN", (unsigned)len); }
+			if(calls < 30) { calls++; DbgLog("net_read(len=%u): nothing waiting -> EAGAIN", (unsigned)len); }
 			return -EAGAIN;
 		}
 	}
 
 	s32 ret = __real_net_read(s, mem, len);
-	if(s == smbSockFd && calls < 60) { calls++; DbgLog("net_read(len=%u) = %d", (unsigned)len, (int)ret); }
+	if(s == smbSockFd && (calls < 30 || ret < 0)) { calls++; DbgLog("net_read(len=%u) = %d", (unsigned)len, (int)ret); }
 	return ret;
 }
 #endif
@@ -315,6 +324,8 @@ static DIR_ITER * smb_diropen_r(struct _reent *, DIR_ITER * dirState, const char
 	DbgLog("diropen: smb2_opendir('%s') ...", relPath);
 	smb2dir * dir = smb2_opendir(OgcSmbDriver::getContext(), relPath);
 	DbgLog("diropen: smb2_opendir returned %p", (void *)dir);
+	if(!dir)
+		DbgLog("diropen: error: %s", smb2_get_error(OgcSmbDriver::getContext()));
 	if(!dir)
 	{
 		char context[64];
