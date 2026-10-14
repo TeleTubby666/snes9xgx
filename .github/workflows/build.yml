@@ -29,9 +29,18 @@ jobs:
         git clone --depth 1 --recurse-submodules --shallow-submodules https://github.com/dborth/libdvm.git /tmp/libdvm
         cd /tmp/libdvm && make install
 
+    - name: Build and install libogc2 with extremscorner/libogc2 PR 31 (Wii only)
+      if: ${{ matrix.image == 'Wii' }}
+      run: |
+        git clone https://github.com/extremscorner/libogc2.git /tmp/libogc2
+        cd /tmp/libogc2
+        git fetch origin pull/31/head:pr31
+        git checkout pr31
+        make -j3 install
+
     - name: Build and install libsmb2
       run: |
-        git clone --depth 1 --branch wii-net-heap-limit https://github.com/TeleTubby666/libsmb2.git /tmp/libsmb2
+        git clone --depth 1 https://github.com/dborth/libsmb2.git /tmp/libsmb2
         cd /tmp/libsmb2
         if [ "${{ matrix.image }}" = "Wii" ]; then
           make -f Makefile.platform wii_install
