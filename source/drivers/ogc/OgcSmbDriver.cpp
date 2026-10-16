@@ -75,45 +75,19 @@ static void DbgLog(const char * fmt, ...)
 }
 
 #ifndef HW_DOL
-// ---- Wii only: guard + trace for libsmb2's socket reads ----
-// libsmb2 reads in a loop until the socket reports EAGAIN. The debug log showed
-// smb2_service() never returns on the Wii after the tree connect, i.e. the
-// read after the last PDU does not come back with "no data". Linked with
-// -Wl,--wrap=net_read (Makefile.wii): for the SMB socket, only really read
-// when select() says data is waiting, otherwise report EAGAIN ourselves.
+// ---- TRACE ONLY (no behaviour change): log every net_read() on the SMB socket
+// before and after the call, so a hang inside net_read shows up as a line
+// without a matching result. The line is written BEFORE the call.
 static volatile int smbSockFd = -1;
-
-// libogc's net_recvfrom() allocates the whole requested length from its fixed
-// 64 KB IOS network heap and fails with IPC_ENOMEM (-22) if that doesn't fit.
-// A directory listing answer from the server is up to ~64 KB, so cap each read;
-// libsmb2 simply keeps reading until the PDU is complete.
-#define SMB_MAX_READ_CHUNK 8192
 
 extern "C" s32 __real_net_read(s32 s, void * mem, size_t len);
 extern "C" s32 __wrap_net_read(s32 s, void * mem, size_t len)
 {
 	static int calls = 0;
-	if(s == smbSockFd)
-	{
-		if(len > SMB_MAX_READ_CHUNK)
-			len = SMB_MAX_READ_CHUNK;
-
-		fd_set rd;
-		FD_ZERO(&rd);
-		FD_SET(s, &rd);
-		struct timeval tv;
-		tv.tv_sec = 0;
-		tv.tv_usec = 0;
-		int r = net_select(s + 1, &rd, NULL, NULL, &tv);
-		if(r == 0)
-		{
-			if(calls < 30) { calls++; DbgLog("net_read(len=%u): nothing waiting -> EAGAIN", (unsigned)len); }
-			return -EAGAIN;
-		}
-	}
-
+	bool trace = (s == smbSockFd) && calls < 80;
+	if(trace) { calls++; DbgLog("net_read(len=%u) calling", (unsigned)len); }
 	s32 ret = __real_net_read(s, mem, len);
-	if(s == smbSockFd && (calls < 30 || ret < 0)) { calls++; DbgLog("net_read(len=%u) = %d", (unsigned)len, (int)ret); }
+	if(trace) DbgLog("net_read(len=%u) = %d", (unsigned)len, (int)ret);
 	return ret;
 }
 #endif
