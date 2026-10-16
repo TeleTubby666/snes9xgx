@@ -21,6 +21,7 @@
 #include <smb2/smb2.h>
 #include <smb2/libsmb2.h>
 #include <cstdio>
+#include <cstdarg>
 #include <network.h>
 #include "OgcSmbDriver.h"
 #include "../Logger.h"
@@ -41,6 +42,81 @@ smb2_context * OgcSmbDriver::ctx = nullptr;
 // Per-PDU timeout for the goodbye exchange in disconnect(): a server that has
 // already gone away must not stall app exit for libsmb2's normal 30 seconds
 #define SMB_DISCONNECT_TIMEOUT_SECS 2
+
+// ---- TEMPORARY DEBUG: writes progress to sd:/apps/snes9xgx/smbdebug.txt ----
+// Every line is opened/appended/closed so it survives a hang.
+// Remove once the Wii SMB connect hang is understood.
+static void DbgLog(const char * fmt, ...)
+{
+	// SD card only; first location that opens wins (FAT is case-insensitive)
+	static const char * const paths[] = {
+		"sd:/apps/snes9xgx/smbdebug.txt",
+		"sd:/snes9xgx/smbdebug.txt",
+		"sd:/smbdebug.txt"
+	};
+
+	char line[256];
+	int n = snprintf(line, sizeof(line), "[%u] ", (unsigned)(SystemTime::now() & 0xffffffff));
+	va_list ap;
+	va_start(ap, fmt);
+	vsnprintf(line + n, sizeof(line) - n - 2, fmt, ap);
+	va_end(ap);
+	strcat(line, "\n");
+
+	for(unsigned i = 0; i < sizeof(paths) / sizeof(paths[0]); i++)
+	{
+		FILE * f = fopen(paths[i], "a");
+		if(!f)
+			continue;
+		fputs(line, f);
+		fclose(f);
+		break;
+	}
+}
+
+#ifndef HW_DOL
+// ---- Wii only: guard + trace for libsmb2's socket reads ----
+// libsmb2 reads in a loop until the socket reports EAGAIN. The debug log showed
+// smb2_service() never returns on the Wii after the tree connect, i.e. the
+// read after the last PDU does not come back with "no data". Linked with
+// -Wl,--wrap=net_read (Makefile.wii): for the SMB socket, only really read
+// when select() says data is waiting, otherwise report EAGAIN ourselves.
+static volatile int smbSockFd = -1;
+
+// libogc's net_recvfrom() allocates the whole requested length from its fixed
+// 64 KB IOS network heap and fails with IPC_ENOMEM (-22) if that doesn't fit.
+// A directory listing answer from the server is up to ~64 KB, so cap each read;
+// libsmb2 simply keeps reading until the PDU is complete.
+#define SMB_MAX_READ_CHUNK 8192
+
+extern "C" s32 __real_net_read(s32 s, void * mem, size_t len);
+extern "C" s32 __wrap_net_read(s32 s, void * mem, size_t len)
+{
+	static int calls = 0;
+	if(s == smbSockFd)
+	{
+		if(len > SMB_MAX_READ_CHUNK)
+			len = SMB_MAX_READ_CHUNK;
+
+		fd_set rd;
+		FD_ZERO(&rd);
+		FD_SET(s, &rd);
+		struct timeval tv;
+		tv.tv_sec = 0;
+		tv.tv_usec = 0;
+		int r = net_select(s + 1, &rd, NULL, NULL, &tv);
+		if(r == 0)
+		{
+			if(calls < 30) { calls++; DbgLog("net_read(len=%u): nothing waiting -> EAGAIN", (unsigned)len); }
+			return -EAGAIN;
+		}
+	}
+
+	s32 ret = __real_net_read(s, mem, len);
+	if(s == smbSockFd && (calls < 30 || ret < 0)) { calls++; DbgLog("net_read(len=%u) = %d", (unsigned)len, (int)ret); }
+	return ret;
+}
+#endif
 
 // Fixed device name (smb:/)
 static const char * const smbDeviceName = "smb";
@@ -203,7 +279,9 @@ static int smb_fstat_r(struct _reent *, void * fileStruct, struct stat * st)
 static int smb_stat_r(struct _reent *, const char * path, struct stat * st)
 {
 	smb2_stat_64 s;
+	DbgLog("stat: smb2_stat('%s') ...", RelativePath(path));
 	int result = smb2_stat(OgcSmbDriver::getContext(), RelativePath(path), &s);
+	DbgLog("stat: returned %d", result);
 	if(result < 0)
 	{
 		CaptureSmb2Error("stat");
@@ -243,7 +321,11 @@ struct SmbDirState
 static DIR_ITER * smb_diropen_r(struct _reent *, DIR_ITER * dirState, const char * path)
 {
 	const char * relPath = RelativePath(path);
+	DbgLog("diropen: smb2_opendir('%s') ...", relPath);
 	smb2dir * dir = smb2_opendir(OgcSmbDriver::getContext(), relPath);
+	DbgLog("diropen: smb2_opendir returned %p", (void *)dir);
+	if(!dir)
+		DbgLog("diropen: error: %s", smb2_get_error(OgcSmbDriver::getContext()));
 	if(!dir)
 	{
 		char context[64];
@@ -340,23 +422,37 @@ enum class WaitResult
 static WaitResult WaitForConnect(smb2_context * ctx, ConnectWait & wait, SmbCancelCheck cancelCheck)
 {
 	Ticks start = SystemTime::now();
+	int iter = 0;
+	DbgLog("WaitForConnect: enter");
 
 	while(!wait.finished)
 	{
+		iter++;
 		if(cancelCheck && cancelCheck())
+		{
+			DbgLog("WaitForConnect: cancelled (iter %d)", iter);
 			return WaitResult::Cancelled;
+		}
 
 		if(SystemTime::diffMillisecs(start, SystemTime::now()) >= SMB_CONNECT_TIMEOUT_MS)
+		{
+			DbgLog("WaitForConnect: TIMEOUT (iter %d)", iter);
 			return WaitResult::TimedOut;
+		}
 
 		int fd = smb2_get_fd(ctx);
 		if(fd < 0)
 		{
+			if(iter <= 20) DbgLog("WaitForConnect: iter %d no fd yet", iter);
 			usleep(SMB_WAIT_SLICE_MS * 1000); // no socket (yet) - the deadline above still applies
 			continue;
 		}
 
+#ifndef HW_DOL
+		smbSockFd = fd;
+#endif
 		int events = smb2_which_events(ctx);
+		if(iter <= 60) DbgLog("WaitForConnect: iter %d fd=%d events=0x%x -> net_select", iter, fd, events);
 		fd_set rd, wr, ex;
 		FD_ZERO(&rd);
 		FD_ZERO(&wr);
@@ -372,6 +468,7 @@ static WaitResult WaitForConnect(smb2_context * ctx, ConnectWait & wait, SmbCanc
 		tv.tv_usec = SMB_WAIT_SLICE_MS * 1000;
 
 		int ready = net_select(fd + 1, &rd, &wr, &ex, &tv);
+		if(iter <= 60 || ready != 0) DbgLog("WaitForConnect: iter %d net_select returned %d", iter, ready);
 		if(ready < 0)
 		{
 			snprintf(lastError, sizeof(lastError), "Network error while connecting (%d)", ready);
@@ -388,10 +485,17 @@ static WaitResult WaitForConnect(smb2_context * ctx, ConnectWait & wait, SmbCanc
 		if(FD_ISSET(fd, &ex))
 			revents |= POLLHUP;
 
-		if(revents && smb2_service(ctx, revents) < 0)
-			return WaitResult::Failed; // libsmb2's own message is picked up by CaptureSmb2Error()
+		if(revents)
+		{
+			DbgLog("WaitForConnect: iter %d smb2_service(revents=0x%x) ...", iter, revents);
+			int svc = smb2_service(ctx, revents);
+			DbgLog("WaitForConnect: iter %d smb2_service returned %d, finished=%d status=%d", iter, svc, (int)wait.finished, wait.status);
+			if(svc < 0)
+				return WaitResult::Failed; // libsmb2's own message is picked up by CaptureSmb2Error()
+		}
 	}
 
+	DbgLog("WaitForConnect: finished, status=%d", wait.status);
 	return WaitResult::Finished;
 }
 
@@ -425,6 +529,7 @@ bool OgcSmbDriver::isNetworkUp() const
 
 bool OgcSmbDriver::ensureNetworkUp()
 {
+	DbgLog("ensureNetworkUp(): enter");
 #ifdef HW_DOL
 	// lwIP's DHCP wait can't be interrupted
 	if(GameCubeNetwork::ensureUp()) return true;
@@ -438,6 +543,7 @@ bool OgcSmbDriver::ensureNetworkUp()
 SmbConnectResult OgcSmbDriver::connect(const SmbShareInfo & info)
 {
 	lastError[0] = '\0';
+	DbgLog("connect(): start host='%s' share='%s'", info.host, info.share);
 
 	if(info.host[0] == '\0' || info.share[0] == '\0')
 		return SmbConnectResult::InvalidSettings;
@@ -465,8 +571,10 @@ SmbConnectResult OgcSmbDriver::connect(const SmbShareInfo & info)
 
 	// DNS resolution, TCP connect, and the SMB2 negotiate/session-setup/tree-connect exchange
 	ConnectWait wait = { false, 0 };
+	DbgLog("connect(): calling smb2_connect_share_async");
 	int startResult = smb2_connect_share_async(ctx, info.host, info.share, info.user[0] ? info.user : nullptr, ConnectCallback, &wait);
 	WaitResult waitResult = WaitResult::Failed;
+	DbgLog("connect(): smb2_connect_share_async returned %d", startResult);
 
 	if(startResult == 0)
 		waitResult = WaitForConnect(ctx, wait, cancelCheck);
@@ -496,8 +604,10 @@ SmbConnectResult OgcSmbDriver::connect(const SmbShareInfo & info)
 		return result;
 	}
 
+	DbgLog("connect(): connected, registering devoptab");
 	static devoptab_t smbDevoptab = BuildSmbDevoptab();
 	int devnum = AddDevice(&smbDevoptab);
+	DbgLog("connect(): AddDevice returned %d", devnum);
 	if(devnum < 0)
 	{
 		// A real connection succeeded but the devoptab itself couldn't be registered
@@ -510,11 +620,15 @@ SmbConnectResult OgcSmbDriver::connect(const SmbShareInfo & info)
 	devoptabAdded = true;
 
 	current = info;
+	DbgLog("connect(): returning Success");
 	return SmbConnectResult::Success;
 }
 
 void OgcSmbDriver::disconnect()
 {
+#ifndef HW_DOL
+	smbSockFd = -1;
+#endif
 	if(devoptabAdded)
 	{
 		RemoveDevice("smb:");
