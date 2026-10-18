@@ -49,7 +49,7 @@ CXXFLAGS	=	$(CFLAGS) -Wno-register -fno-exceptions -fno-rtti -fno-threadsafe-sta
 LDFLAGS	=	-g -O3 $(MACHDEP) -Wl,-Map,$(notdir $@).map -Wl,--gc-sections
 LDFLAGS +=	-L../buildtools
 # SMB: guard libsmb2 socket reads against blocking (see OgcSmbDriver.cpp)
-LDFLAGS +=	-Wl,--wrap=net_read
+LDFLAGS +=	-Wl,--wrap=net_read -Wl,--wrap=net_ioctl -Wl,--wrap=net_fcntl
 
 #---------------------------------------------------------------------------------
 # any extra libraries we wish to link with the project

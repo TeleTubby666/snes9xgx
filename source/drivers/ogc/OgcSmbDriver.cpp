@@ -75,19 +75,54 @@ static void DbgLog(const char * fmt, ...)
 }
 
 #ifndef HW_DOL
-// ---- TRACE ONLY (no behaviour change): log every net_read() on the SMB socket
-// before and after the call, so a hang inside net_read shows up as a line
-// without a matching result. The line is written BEFORE the call.
+// ---- DIAGNOSTICS ONLY (no behaviour change) ----
+// Questions from the libsmb2 maintainer: what does net_ioctl(fd, FIONBIO, &one)
+// return, what does net_fcntl(fd, F_GETFL) report afterwards, and how long does
+// net_read() take on an idle connected socket? Everything is logged BEFORE and
+// AFTER the call so a blocking call shows up as a line without a result.
+// IOS_O_NONBLOCK in libogc2 is 0x04.
 static volatile int smbSockFd = -1;
 
 extern "C" s32 __real_net_read(s32 s, void * mem, size_t len);
+extern "C" s32 __real_net_ioctl(s32 s, u32 cmd, void * argp);
+extern "C" s32 __real_net_fcntl(s32 s, u32 cmd, u32 flags);
+
+extern "C" s32 __wrap_net_ioctl(s32 s, u32 cmd, void * argp)
+{
+	static int calls = 0;
+	bool trace = calls < 20;
+	int arg = argp ? *(int *)argp : -1;
+	if(trace) { calls++; DbgLog("net_ioctl(fd=%d, cmd=0x%x, *arg=%d) calling", (int)s, (unsigned)cmd, arg); }
+	s32 ret = __real_net_ioctl(s, cmd, argp);
+	if(trace)
+	{
+		DbgLog("net_ioctl(fd=%d, cmd=0x%x) = %d", (int)s, (unsigned)cmd, (int)ret);
+		s32 fl = __real_net_fcntl(s, 3 /* F_GETFL */, 0);
+		DbgLog("  after it: net_fcntl(fd=%d, F_GETFL) = 0x%x  (IOS_O_NONBLOCK 0x04 %s)", (int)s, (unsigned)fl, (fl & 0x04) ? "SET" : "NOT set");
+	}
+	return ret;
+}
+
+extern "C" s32 __wrap_net_fcntl(s32 s, u32 cmd, u32 flags)
+{
+	static int calls = 0;
+	s32 ret = __real_net_fcntl(s, cmd, flags);
+	if(calls < 20) { calls++; DbgLog("net_fcntl(fd=%d, cmd=%u, flags=0x%x) = 0x%x", (int)s, (unsigned)cmd, (unsigned)flags, (unsigned)ret); }
+	return ret;
+}
+
 extern "C" s32 __wrap_net_read(s32 s, void * mem, size_t len)
 {
 	static int calls = 0;
 	bool trace = (s == smbSockFd) && calls < 80;
+	Ticks t0 = SystemTime::now();
 	if(trace) { calls++; DbgLog("net_read(len=%u) calling", (unsigned)len); }
 	s32 ret = __real_net_read(s, mem, len);
-	if(trace) DbgLog("net_read(len=%u) = %d", (unsigned)len, (int)ret);
+	if(trace)
+	{
+		s32 fl = __real_net_fcntl(s, 3 /* F_GETFL */, 0);
+		DbgLog("net_read(len=%u) = %d after %d ms, F_GETFL=0x%x", (unsigned)len, (int)ret, (int)SystemTime::diffMillisecs(t0, SystemTime::now()), (unsigned)fl);
+	}
 	return ret;
 }
 #endif
