@@ -39,7 +39,7 @@ jobs:
 
     - name: Build and install libsmb2
       run: |
-        git clone --depth 1 https://github.com/dborth/libsmb2.git /tmp/libsmb2
+        git clone --depth 1 --branch wii-fionbio-fix https://github.com/TeleTubby666/libsmb2.git /tmp/libsmb2
         cd /tmp/libsmb2
         if [ "${{ matrix.image }}" = "Wii" ]; then
           make -f Makefile.platform wii_install
