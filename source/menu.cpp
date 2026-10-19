@@ -63,9 +63,9 @@ extern void ToggleCheat(uint32);
 
 #define THREAD_SLEEP 100
 
-// Button that toggles "favorite" in the file browser (Minus on Wii / Wii U).
+// Button that toggles "favorite" in the file browser (Plus on Wii / Wii U).
 // Not used by GuiFileBrowser itself.
-#define FAVORITE_TOGGLE_BUTTON INPUT_BTN_MINUS
+#define FAVORITE_TOGGLE_BUTTON INPUT_BTN_PLUS
 
 #ifndef HW_DOL
 static GuiImageData * pointer[4];
