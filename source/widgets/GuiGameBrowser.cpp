@@ -84,6 +84,7 @@ GuiGameBrowser::GuiGameBrowser(int w, int h)
 	iconUSB = new GuiImageData(icon_usb_png);
 	iconDVD = new GuiImageData(icon_dvd_png);
 	iconSMB = new GuiImageData(icon_smb_png);
+	iconStar = new GuiImageData(icon_star_png);
 
 	// scrollbar: a thin track, round arrow buttons and a pill thumb. They gray at rest
 	// and take the accent color when the pointer is on them or they are held.
@@ -223,6 +224,7 @@ GuiGameBrowser::~GuiGameBrowser()
 	delete iconUSB;
 	delete iconDVD;
 	delete iconSMB;
+	delete iconStar;
 
 	delete trigHeldA;
 	delete trigA;
@@ -547,6 +549,9 @@ void GuiGameBrowser::update(InputController * controller)
 						break;
 					case ICON_SMB:
 						fileListIcon[i] = new GuiImage(iconSMB);
+						break;
+					case ICON_STAR:
+						fileListIcon[i] = new GuiImage(iconStar);
 						break;
 				}
 				fileList[i]->setIcon(fileListIcon[i]);
