@@ -12,16 +12,41 @@
  ***************************************************************************/
 #pragma once
 
+#include <string>
+
 //! Credentials/target for a single SMB share. All fields are plain
 //! null-terminated strings. A share with no credentials (guest access)
 //! leaves user/password empty.
 struct SmbShareInfo
 {
 	char host[64];      //!< server IP or hostname
-	char share[64];     //!< share name, eg. "games" (no leading/trailing slashes)
+	char share[64];     //!< share name, eg. "games", optionally followed by a folder inside it: "games/SNES" (see SplitSmbShare)
 	char user[32];      //!< "" for guest/anonymous
 	char password[32];
 };
+
+//! The share setting may name a folder inside the share ("Roms/SNES"): everything the app
+//! reads or writes on the share is then relative to that folder. Splits the setting into the
+//! share itself and that folder. Both '/' and '\\' are accepted as separators; separators at
+//! the ends and repeated ones are dropped, so folder has no leading or trailing slash and is
+//! "" when there is none.
+inline void SplitSmbShare(const char * setting, std::string & share, std::string & folder)
+{
+	std::string s;
+	for(const char * c = setting; *c != '\0'; c++)
+	{
+		char ch = (*c == '\\') ? '/' : *c;
+		if(ch == '/' && (s.empty() || s.back() == '/'))
+			continue;
+		s += ch;
+	}
+	if(!s.empty() && s.back() == '/')
+		s.pop_back();
+
+	size_t slash = s.find('/');
+	share = s.substr(0, slash);
+	folder = (slash == std::string::npos) ? std::string() : s.substr(slash + 1);
+}
 
 //! Result of a single connect() attempt. Deliberately mirrors MountResult's
 //! shape (see FileSystemDriver.h) but SMB gets its own enum since the

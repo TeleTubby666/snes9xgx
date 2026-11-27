@@ -321,7 +321,7 @@ Cover art, screenshots, or general artwork can be shown on the main menu when a 
 
 ### Network Shares (SMB)
 
-To load or save over your LAN, enter your SMB share settings under **Settings → Network**: **IP**, **Name** (the share name), **Username**, and **Password**.
+To load or save over your LAN, enter your SMB share settings under **Settings → Network**: **IP**, **Name** (the share name), **Username**, and **Password**. **Name** may also include a folder inside the share, e.g. `Roms/SNES`: the share is then used as if that folder were its root (the folder has to exist).
 
 > 🔑 If your SMB share doesn't have a password, **leave the Password field blank** — don't type anything into it. An empty password connects as guest.
 

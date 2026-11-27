@@ -23,6 +23,7 @@
 #include <smb2/smb2.h>
 #include <smb2/libsmb2.h>
 #include <cstdio>
+#include <string>
 #include <nn/ac.h>
 #include "WutSmbDriver.h"
 #include "../Logger.h"
@@ -61,7 +62,11 @@ static void CaptureSmb2Error(const char * context)
 /****************************************************************************
  * Path / error helpers
  ***************************************************************************/
-static const char * RelativePath(const char * path)
+// Folder inside the share that everything is relative to ("" for the share's root). Set by
+// connect() from the share setting, see SplitSmbShare().
+static std::string g_shareFolder;
+
+static std::string RelativePath(const char * path)
 {
 	// Devoptab callbacks get the ORIGINAL path exactly as the app passed
 	// it to opendir()/open()/etc - including our own "smb:" device prefix
@@ -72,7 +77,11 @@ static const char * RelativePath(const char * path)
 
 	if(path[0] == '/')
 		path++;
-	return path;
+
+	if(g_shareFolder.empty())
+		return path;
+
+	return path[0] ? g_shareFolder + "/" + path : g_shareFolder;
 }
 
 static int SetErrnoFromSmb2(int smb2Result)
@@ -114,7 +123,7 @@ static int smb_open_r(struct _reent *, void * fileStruct, const char * path, int
 	// the tracked write cursor, so it's stripped before handing flags off
 	// rather than relying on the server/library to honor it.
 	bool append = (flags & O_APPEND) != 0;
-	smb2fh * fh = smb2_open(WutSmbDriver::getContext(), RelativePath(path), flags & ~O_APPEND);
+	smb2fh * fh = smb2_open(WutSmbDriver::getContext(), RelativePath(path).c_str(), flags & ~O_APPEND);
 	if(!fh)
 	{
 		CaptureSmb2Error("open");
@@ -201,7 +210,7 @@ static int smb_fstat_r(struct _reent *, void * fileStruct, struct stat * st)
 static int smb_stat_r(struct _reent *, const char * path, struct stat * st)
 {
 	smb2_stat_64 s;
-	int result = smb2_stat(WutSmbDriver::getContext(), RelativePath(path), &s);
+	int result = smb2_stat(WutSmbDriver::getContext(), RelativePath(path).c_str(), &s);
 	if(result < 0)
 	{
 		CaptureSmb2Error("stat");
@@ -214,19 +223,19 @@ static int smb_stat_r(struct _reent *, const char * path, struct stat * st)
 
 static int smb_unlink_r(struct _reent *, const char * path)
 {
-	int result = smb2_unlink(WutSmbDriver::getContext(), RelativePath(path));
+	int result = smb2_unlink(WutSmbDriver::getContext(), RelativePath(path).c_str());
 	return (result < 0) ? SetErrnoFromSmb2(result) : 0;
 }
 
 static int smb_mkdir_r(struct _reent *, const char * path, int)
 {
-	int result = smb2_mkdir(WutSmbDriver::getContext(), RelativePath(path));
+	int result = smb2_mkdir(WutSmbDriver::getContext(), RelativePath(path).c_str());
 	return (result < 0) ? SetErrnoFromSmb2(result) : 0;
 }
 
 static int smb_rmdir_r(struct _reent *, const char * path)
 {
-	int result = smb2_rmdir(WutSmbDriver::getContext(), RelativePath(path));
+	int result = smb2_rmdir(WutSmbDriver::getContext(), RelativePath(path).c_str());
 	return (result < 0) ? SetErrnoFromSmb2(result) : 0;
 }
 
@@ -240,12 +249,12 @@ struct SmbDirState
 
 static DIR_ITER * smb_diropen_r(struct _reent *, DIR_ITER * dirState, const char * path)
 {
-	const char * relPath = RelativePath(path);
-	smb2dir * dir = smb2_opendir(WutSmbDriver::getContext(), relPath);
+	std::string relPath = RelativePath(path);
+	smb2dir * dir = smb2_opendir(WutSmbDriver::getContext(), relPath.c_str());
 	if(!dir)
 	{
 		char context[64];
-		snprintf(context, sizeof(context), "opendir '%s'", relPath[0] ? relPath : "(root)");
+		snprintf(context, sizeof(context), "opendir '%s'", !relPath.empty() ? relPath.c_str() : "(root)");
 		CaptureSmb2Error(context);
 		SetErrnoFromSmb2(-ENOENT);
 		return nullptr;
@@ -469,7 +478,10 @@ SmbConnectResult WutSmbDriver::connect(const SmbShareInfo & info)
 {
 	g_lastError[0] = '\0';
 
-	if(info.host[0] == '\0' || info.share[0] == '\0')
+	std::string shareName, shareFolder;
+	SplitSmbShare(info.share, shareName, shareFolder);
+
+	if(info.host[0] == '\0' || shareName.empty())
 		return SmbConnectResult::InvalidSettings;
 
 	if(ctx && strcmp(current.host, info.host) == 0 && strcmp(current.share, info.share) == 0 && strcmp(current.user, info.user) == 0)
@@ -495,7 +507,7 @@ SmbConnectResult WutSmbDriver::connect(const SmbShareInfo & info)
 
 	// Name lookup, TCP connect, and the SMB2 negotiate/session-setup/tree-connect exchange
 	ConnectWait wait = { false, 0 };
-	int startResult = smb2_connect_share_async(ctx, info.host, info.share, info.user[0] ? info.user : nullptr, ConnectCallback, &wait);
+	int startResult = smb2_connect_share_async(ctx, info.host, shareName.c_str(), info.user[0] ? info.user : nullptr, ConnectCallback, &wait);
 	WaitResult waitResult = WaitResult::Failed;
 
 	if(startResult == 0)
@@ -526,6 +538,21 @@ SmbConnectResult WutSmbDriver::connect(const SmbShareInfo & info)
 		return result;
 	}
 
+	// A folder inside the share was asked for: it has to be there, or everything would fail later
+	// with errors that say nothing about the cause
+	if(!shareFolder.empty())
+	{
+		smb2_stat_64 folderStat;
+		if(smb2_stat(ctx, shareFolder.c_str(), &folderStat) < 0 || folderStat.smb2_type != SMB2_TYPE_DIRECTORY)
+		{
+			snprintf(g_lastError, sizeof(g_lastError), "Folder '%s' not found in the share", shareFolder.c_str());
+			smb2_disconnect_share(ctx);
+			smb2_destroy_context(ctx);
+			ctx = nullptr;
+			return SmbConnectResult::ConnectFailed;
+		}
+	}
+
 	static devoptab_t smbDevoptab = BuildSmbDevoptab();
 	int devnum = AddDevice(&smbDevoptab);
 	if(devnum < 0)
@@ -539,6 +566,7 @@ SmbConnectResult WutSmbDriver::connect(const SmbShareInfo & info)
 	}
 	devoptabAdded = true;
 
+	g_shareFolder = shareFolder;
 	current = info;
 	return SmbConnectResult::Success;
 }
