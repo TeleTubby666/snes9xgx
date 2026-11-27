@@ -44,6 +44,7 @@
 #include "fileop.h"
 #include "preferences.h"
 #include "menu/menu.h"
+#include "widgets/GuiGameBrowser.h" // FILE_PAGESIZE
 #include "drivers/Platform.h"
 #include "drivers/FileSystemDriver.h"
 #include "drivers/Mutex.h"
@@ -420,9 +421,17 @@ static bool FavSortLess(const FavSortItem & a, const FavSortItem & b)
 	return strcasecmp(a.display.c_str(), b.display.c_str()) < 0;
 }
 
-// Fills the game list with the favorites. announceEmpty: tell the user how to add one
-// when there is none (not wanted after the last one was just removed).
-static int ShowFavorites(bool announceEmpty)
+// Number of favorites, or -1 if the list can't be used (its file is out of reach)
+static int CountFavorites()
+{
+	EnsureLoaded();
+
+	MutexLock lock(FavoritesLock());
+	return favoritesLoaded ? (int)favorites.size() : -1;
+}
+
+// Fills the game list with the favorites.
+static int ShowFavorites()
 {
 	EnsureLoaded();
 
@@ -436,6 +445,11 @@ static int ShowFavorites(bool announceEmpty)
 	ResetBrowser();
 	snprintf(browser.dir, sizeof(browser.dir), "%s", FAVORITES_DIR);
 	szOpenedFromFavorites = false;
+
+	// Remember that the Favorites folder is open: the settings keep "favorites:/" as the last
+	// folder, so after a game or a restart the list opens here again (see OpenFavoritesIfRemembered)
+	snprintf(EmuSettings.loadFolder, sizeof(EmuSettings.loadFolder), "%s", FAVORITES_DIR);
+	EmuSettings.loadDevice = DEVICE_AUTO;
 
 	// ".." entry so the user can go back to the device listing. The list is never empty, so
 	// BrowserChangeFolder() does not throw the user out to the device listing.
@@ -494,15 +508,6 @@ static int ShowFavorites(bool announceEmpty)
 	browser.selIndex = 0;
 	browser.pageIndex = 0;
 
-	if(announceEmpty && items.empty())
-	{
-// (the prompt does not do line breaks of its own: a "\n" in the text is dropped)
-#ifdef HW_DOL
-		InfoPrompt("No favorites yet. Press Start on a game to add it.");
-#else
-		InfoPrompt("No favorites yet. Press + (Start on a GameCube controller) on a game to add it.");
-#endif
-	}
 	return browser.numEntries;
 }
 
@@ -525,13 +530,13 @@ static int OpenFavoriteSz()
 {
 	char full[MAXPATHLEN + 1];
 	if(!FormatString(full, sizeof(full), "%s", browserList[browser.selIndex].filename))
-		return ShowFavorites(false);
+		return ShowFavorites();
 
 	RemapUsbPathIfNeeded(full, sizeof(full));
 
 	char dir[MAXPATHLEN + 1];
 	if(!FormatString(dir, sizeof(dir), "%s/", full) || !ChangeInterface(dir, NOTSILENT))
-		return ShowFavorites(false); // the user is told why; the list stays as it was
+		return ShowFavorites(); // the user is told why; the list stays as it was
 
 	HaltParseThread();
 	ResetBrowser();
@@ -543,7 +548,7 @@ static int OpenFavoriteSz()
 		return browser.numEntries;
 	}
 
-	return ShowFavorites(false); // BrowserLoadSz() has shown the error
+	return ShowFavorites(); // BrowserLoadSz() has shown the error
 }
 
 bool FavoritesChangeFolder(int * result)
@@ -561,7 +566,28 @@ bool FavoritesChangeFolder(int * result)
 	// click on "Favorites" in the device listing
 	if(browser.dir[0] == 0 && strcmp(selected, FAVORITES_DIR) == 0)
 	{
-		*result = ShowFavorites(true);
+		int count = CountFavorites();
+
+		// Nothing to show: say why, and stay on the device listing
+		if(count <= 0)
+		{
+			if(count == 0)
+			{
+// (the prompt does not do line breaks of its own: a "\n" in the text is dropped)
+#ifdef HW_DOL
+				InfoPrompt("No favorites yet. Press Start on a game to add it.");
+#else
+				InfoPrompt("No favorites yet. Press + (Start on a GameCube controller) on a game to add it.");
+#endif
+			}
+			else
+				ErrorPrompt("Favorites can't be used: settings location not available!");
+
+			*result = browser.numEntries;
+			return true;
+		}
+
+		*result = ShowFavorites();
 		return true;
 	}
 
@@ -569,7 +595,7 @@ bool FavoritesChangeFolder(int * result)
 	if(wasOpenedFromFavorites && inSz && browser.selIndex == 0)
 	{
 		CloseSzIfOpen();
-		*result = ShowFavorites(false);
+		*result = ShowFavorites();
 		return true;
 	}
 
@@ -591,6 +617,41 @@ bool FavoritesChangeFolder(int * result)
 	}
 
 	return false;
+}
+
+// OpenGameList(): if the Favorites folder was open last time (see ShowFavorites), open it again
+bool OpenFavoritesIfRemembered(int * result)
+{
+	if(strcmp(EmuSettings.loadFolder, FAVORITES_DIR) != 0)
+		return false;
+
+	// Nothing to show: the device listing opens instead. If that is only because the list can't
+	// be reached right now (-1), the setting stays, so the next start can still open the favorites.
+	int count = CountFavorites();
+	if(count <= 0)
+	{
+		if(count == 0)
+			EmuSettings.loadFolder[0] = 0;
+		return false;
+	}
+
+	*result = ShowFavorites();
+
+	// select the game played last, like the normal browser does
+	char dir[MAXPATHLEN + 1];
+	char name[MAXJOLIET + 1];
+	for(int i = 1; i < browser.numEntries; i++)
+	{
+		if(SplitPath(browserList[i].filename, dir, sizeof(dir), name, sizeof(name)) &&
+		   strcmp(name, EmuSettings.lastFileLoaded) == 0)
+		{
+			browser.selIndex = i;
+			if(i >= FILE_PAGESIZE)
+				browser.pageIndex = std::max(0, std::min(i / FILE_PAGESIZE * FILE_PAGESIZE, browser.numEntries - FILE_PAGESIZE));
+			break;
+		}
+	}
+	return true;
 }
 
 int AddFavoritesListingEntry(int index)
@@ -648,18 +709,9 @@ int BrowserLoadFavorite()
 		loaded = BrowserLoadFile(); // browser.dir is no longer the favorites dir
 	}
 
-	if(loaded)
-	{
-		// remember the ROM's folder so the normal browser opens there next time
-		const char * path = StripDevice(browser.dir);
-		if(path != NULL)
-		{
-			strncpy(EmuSettings.loadFolder, path, sizeof(EmuSettings.loadFolder) - 1);
-			EmuSettings.loadFolder[sizeof(EmuSettings.loadFolder) - 1] = 0;
-		}
-		FindDevice(browser.dir, &EmuSettings.loadDevice);
-	}
-	else
+	// (On success the list is left as it is: loadFolder still says "favorites:/", so after the game
+	// the Favorites folder opens again.)
+	if(!loaded)
 	{
 		snprintf(browserList[sel].filename, sizeof(browserList[sel].filename), "%s", full);
 		snprintf(browser.dir, sizeof(browser.dir), "%s", FAVORITES_DIR);
@@ -703,7 +755,7 @@ int ToggleFavoriteOnSelection()
 		}
 
 		int oldSel = browser.selIndex;
-		ShowFavorites(false);
+		ShowFavorites();
 		browser.selIndex = (oldSel < browser.numEntries) ? oldSel : browser.numEntries - 1;
 		return FAVORITE_REMOVED;
 	}

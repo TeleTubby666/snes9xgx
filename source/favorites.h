@@ -30,6 +30,10 @@ enum
 
 bool InFavoritesView();
 
+// OpenGameList(): reopen the Favorites folder if it was open last time. Returns true if it
+// did; *result is then OpenGameList()'s return value.
+bool OpenFavoritesIfRemembered(int * result);
+
 // ParseDirEntries(): is dir + filename ("sd:/roms/" + "Game.smc") in the list? Thread-safe.
 // The folder reader stores the answer in BROWSERENTRY.favorite, once per file.
 bool IsFavoriteFile(const char * dir, const char * filename);

@@ -962,6 +962,11 @@ int BrowserChangeFolder()
  ***************************************************************************/
 int OpenGameList()
 {
+	// the Favorites folder was open last time
+	int favResult;
+	if(OpenFavoritesIfRemembered(&favResult))
+		return favResult;
+
 	int device = EmuSettings.loadDevice;
 
 	// change current dir to roms directory

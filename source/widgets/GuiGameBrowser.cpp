@@ -28,7 +28,6 @@
 #define ROW_TEXT_X_ICON		34
 #define ROW_TEXT_PAD		6		// room kept at the row's right end
 #define ROW_STAR_INSET		6		// favorite star: distance from the row's right edge
-#define ROW_STAR_LIFT		2		// favorite star: raised a little so it looks centered next to the text
 
 //! Step size (in rows) for one scroll action while the on-screen scrollbar
 //! arrow is held, based on how long it's been held continuously.
@@ -571,7 +570,7 @@ void GuiGameBrowser::update(InputController * controller)
 				if(starOnRight)
 				{
 					fileListIcon[i]->setAlignment(ALIGN_H::RIGHT, ALIGN_V::MIDDLE);
-					fileListIcon[i]->setPosition(-ROW_STAR_INSET,ROW_ICON_Y - ROW_STAR_LIFT);
+					fileListIcon[i]->setPosition(-ROW_STAR_INSET,ROW_ICON_Y);
 					// a long name ends before the star instead of running under it
 					fileListText[i]->setMaxWidth(fileList[i]->getWidth() - ROW_TEXT_X - ROW_STAR_INSET - iconStar->getWidth() - ROW_TEXT_PAD);
 				}
